@@ -1,21 +1,41 @@
 import { LogOrigin } from 'ontime-types';
 
-import { Server } from 'node-osc';
-
 import { IAdapter } from './IAdapter.js';
 import { logger } from '../classes/Logger.js';
 import { integrationPayloadFromPath } from './utils/parse.js';
 import { dispatchFromAdapter } from '../api-integration/integration.controller.js';
 
+import { Argument } from 'node-osc';
+import { createSocket, type Socket } from 'node:dgram';
+import oscMin from 'osc-min';
+const { toBuffer, fromBuffer } = oscMin;
+
 export class OscServer implements IAdapter {
-  private readonly osc: Server;
+  private readonly socket: Socket;
 
-  constructor(portIn: number) {
-    this.osc = new Server(portIn, '0.0.0.0');
+  constructor(portIn: number, feedback: boolean = true) {
+    this.socket = createSocket({
+      type: 'udp4',
+      reuseAddr: true,
+    });
 
-    this.osc.on('error', (error) => logger.error(LogOrigin.Rx, `OSC IN: ${error}`));
+    this.socket.bind(portIn);
 
-    this.osc.on('message', (msg) => {
+    this.socket.on('message', (buffer, rinfo) => {
+      let decoded: { address: string; args: Argument[]; elements?: any };
+      try {
+        decoded = fromBuffer(buffer);
+      } catch (error) {
+        logger.error(LogOrigin.Rx, `OSC IN: can't decode incoming message: ${error.message}`);
+        return;
+      }
+
+      if (!decoded || decoded.elements) {
+        // nothing decoded or
+        //we don't handle bundles
+        return;
+      }
+
       // message should look like /ontime/{command}/{params?} {args} where
       // ontime: fixed message for app
       // command: command to be called
@@ -23,12 +43,15 @@ export class OscServer implements IAdapter {
       // args: extra data, only used on some API entries
 
       // split message
-      const [, address, command, ...params] = msg[0].split('/');
-      const args = msg[1];
+      const [, address, command, ...params] = decoded.address.split('/');
+      const args = decoded.args[0]; // we only concern our self with the first arg
 
       // get first part before (ontime)
       if (address !== 'ontime') {
-        logger.error(LogOrigin.Rx, `OSC IN: OSC messages to ontime must start with /ontime/, received: ${msg}`);
+        logger.error(
+          LogOrigin.Rx,
+          `OSC IN: OSC messages to ontime must start with /ontime/, received: ${decoded.address}`,
+        );
         return;
       }
 
@@ -45,7 +68,11 @@ export class OscServer implements IAdapter {
       }
 
       try {
-        dispatchFromAdapter(command, transformedPayload, 'osc');
+        const reply = dispatchFromAdapter(command, transformedPayload, 'osc');
+        if (feedback) {
+          const buff = toBuffer(decoded.address, reply.payload);
+          this.socket.send(buff, rinfo.port, rinfo.address);
+        }
       } catch (error) {
         logger.error(LogOrigin.Rx, `OSC IN: ${error}`);
       }
@@ -53,6 +80,6 @@ export class OscServer implements IAdapter {
   }
 
   shutdown() {
-    this.osc?.close();
+    this.socket.close();
   }
 }

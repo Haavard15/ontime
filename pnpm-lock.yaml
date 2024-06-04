@@ -288,6 +288,9 @@ importers:
       ontime-utils:
         specifier: workspace:*
         version: link:../../packages/utils
+      osc-min:
+        specifier: ^1.1.2
+        version: 1.1.2
       steno:
         specifier: ^3.1.0
         version: 3.2.0
